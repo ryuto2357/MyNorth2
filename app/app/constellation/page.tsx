@@ -190,15 +190,15 @@ export default function ConstellationPage() {
           </div>
         </div>
       ) : (
-        <div className="flex gap-4 flex-1 min-h-0">
-          {/* Graph */}
+        <div className="flex gap-4 flex-1 min-h-0 overflow-hidden">
+          {/* Graph - takes remaining space */}
           <div className="flex-1 rounded-xl overflow-hidden bg-[#0f0f1a] min-h-[400px]">
             <ConstellationGraph nodes={nodes} links={links} onNodeClick={setSelectedNode} />
           </div>
 
-          {/* Node detail panel */}
+          {/* Node detail panel - hidden on mobile, fixed width on desktop */}
           {selectedNode && (
-            <div className="w-64 flex-shrink-0 card flex flex-col gap-4 overflow-y-auto">
+            <div className="hidden md:flex w-64 flex-shrink-0 card flex-col gap-4 overflow-y-auto max-h-full">
               <div className="flex items-start gap-2">
                 <div
                   className="w-3 h-3 rounded-full mt-1 flex-shrink-0"
@@ -241,6 +241,59 @@ export default function ConstellationPage() {
               <p className="text-xs text-gray-400 mt-auto">
                 Click another node to explore
               </p>
+            </div>
+          )}
+
+          {/* Mobile: Bottom sheet panel */}
+          {selectedNode && (
+            <div className="md:hidden fixed inset-0 z-50 flex items-end">
+              <div className="absolute inset-0 bg-black/50" onClick={() => setSelectedNode(null)} />
+              <div className="relative w-full bg-white rounded-t-2xl p-6 max-h-[60vh] overflow-y-auto">
+                <button
+                  onClick={() => setSelectedNode(null)}
+                  className="absolute top-4 right-4 text-gray-400 hover:text-gray-600 text-xl"
+                >
+                  ✕
+                </button>
+                <div className="flex items-start gap-2 mb-4">
+                  <div
+                    className="w-3 h-3 rounded-full mt-1 flex-shrink-0"
+                    style={{ backgroundColor: getNodeColor(selectedNode) }}
+                  />
+                  <div>
+                    <h3 className="font-bold text-obsidian text-lg">
+                      {selectedNode.label}
+                    </h3>
+                    <span className="text-sm text-gray-400">
+                      {selectedNode.seniority_level === 0
+                        ? 'North Star'
+                        : selectedNode.seniority_level === 1
+                          ? 'Achievement'
+                          : 'Skill'}
+                    </span>
+                  </div>
+                </div>
+
+                {selectedNode.description && (
+                  <p className="text-sm text-gray-600 leading-relaxed mb-4">{selectedNode.description}</p>
+                )}
+
+                <div>
+                  <div className="flex justify-between text-sm text-gray-500 mb-2">
+                    <span>Familiarity</span>
+                    <span className="font-semibold">{selectedNode.familiarity_score}/10</span>
+                  </div>
+                  <div className="w-full bg-gray-100 rounded-full h-2">
+                    <div
+                      className="h-2 rounded-full transition-all"
+                      style={{
+                        width: `${(selectedNode.familiarity_score / 10) * 100}%`,
+                        backgroundColor: getNodeColor(selectedNode),
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
             </div>
           )}
         </div>
