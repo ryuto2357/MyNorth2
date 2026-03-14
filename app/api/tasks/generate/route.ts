@@ -21,18 +21,113 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Goal not found' }, { status: 404 })
   }
 
-  const { data: nodes } = await supabase
-    .from('nodes')
-    .select('*')
-    .eq('goal_id', goalId)
-    .in('seniority_level', [1, 2])
-    .order('seniority_level')
+  let nodes = (
+    await supabase
+      .from('nodes')
+      .select('*')
+      .eq('goal_id', goalId)
+      .in('seniority_level', [1, 2])
+      .order('seniority_level')
+  ).data
 
+  // Auto-generate constellation if needed
   if (!nodes || nodes.length === 0) {
-    return NextResponse.json(
-      { error: 'No constellation found. Generate your constellation first.' },
-      { status: 400 }
-    )
+    const constellationPrompt = `Break down this student's goal into a knowledge constellation.
+
+Goal: "${goal.title}"
+Why they want it: "${goal.why || 'Not specified'}"
+Deadline: ${goal.deadline || 'Not set'}
+Current familiarity (0-10): ${goal.familiarity_baseline || 0}
+
+Create a constellation with:
+- 1 ROOT node (the goal itself, seniority_level: 0)
+- 3-5 ACHIEVEMENT nodes (major milestones to reach the goal, seniority_level: 1)
+- 2-3 SKILL nodes per achievement (specific skills/topics to learn, seniority_level: 2)
+
+Return ONLY valid JSON like this:
+{
+  "nodes": [
+    {
+      "label": "Short node title (max 35 chars)",
+      "description": "What this covers in 1-2 sentences",
+      "seniority_level": 0,
+      "cluster_id": "root",
+      "familiarity_score": ${goal.familiarity_baseline || 3}
+    }
+  ],
+  "links": [
+    { "source_label": "Parent label", "target_label": "Child label", "relation_type": "PARENT_OF" }
+  ]
+}
+
+Make everything specific and concrete to the goal. No generic placeholders.`
+
+    let raw: string
+    try {
+      raw = await chat(
+        [{ role: 'user', content: constellationPrompt }],
+        'You output only valid JSON. No markdown, no explanation, just the JSON object.'
+      )
+    } catch (err: any) {
+      return NextResponse.json(
+        { error: `Could not generate constellation: ${err.message}` },
+        { status: 500 }
+      )
+    }
+
+    const jsonMatch = raw.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) {
+      return NextResponse.json({ error: 'Could not parse constellation response' }, { status: 500 })
+    }
+
+    let parsed: any
+    try {
+      parsed = JSON.parse(jsonMatch[0])
+    } catch {
+      return NextResponse.json({ error: 'Invalid constellation JSON from AI' }, { status: 500 })
+    }
+
+    const { nodes: nodeData, links: linkData } = parsed
+
+    const nodeInserts = nodeData.map((n: any) => ({
+      user_id: userId,
+      goal_id: goalId,
+      label: String(n.label).substring(0, 499),
+      description: n.description || '',
+      seniority_level: n.seniority_level,
+      cluster_id: n.cluster_id || 'default',
+      familiarity_score: n.familiarity_score || 0,
+      status: 'ACTIVE',
+    }))
+
+    const { data: insertedNodes, error: nodeError } = await supabase
+      .from('nodes')
+      .insert(nodeInserts)
+      .select()
+
+    if (nodeError || !insertedNodes) {
+      return NextResponse.json({ error: nodeError?.message || 'Failed to create nodes' }, { status: 500 })
+    }
+
+    const labelMap: Record<string, string> = {}
+    for (const node of insertedNodes) {
+      labelMap[node.label] = node.id
+    }
+
+    const linkInserts = (linkData || [])
+      .filter((l: any) => labelMap[l.source_label] && labelMap[l.target_label])
+      .map((l: any) => ({
+        source_id: labelMap[l.source_label],
+        target_id: labelMap[l.target_label],
+        relation_type: l.relation_type || 'PARENT_OF',
+        strength: 1.0,
+      }))
+
+    if (linkInserts.length > 0) {
+      await supabase.from('links').insert(linkInserts)
+    }
+
+    nodes = insertedNodes
   }
 
   const nodeList = nodes
