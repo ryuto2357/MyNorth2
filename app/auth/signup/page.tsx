@@ -50,25 +50,8 @@ export default function SignUp() {
       }
 
       if (data.user) {
-        // Create user profile
-        const { error: profileError } = await supabase
-          .from('users')
-          .insert([
-            {
-              id: data.user.id,
-              email: data.user.email,
-              onboarding_complete: false,
-              tier: 'FREE',
-            },
-          ])
-
-        if (profileError) {
-          setError(profileError.message)
-          setLoading(false)
-          return
-        }
-
-        // Redirect to onboarding
+        // User created! The trigger handles profile creation automatically
+        // Just redirect to onboarding
         router.push('/app/onboarding')
       }
     } catch (err: any) {
