@@ -156,6 +156,26 @@ export default function OnboardingForm({ userId }: { userId: string }) {
 
       const completionRate = completionMap[formData.completion] || 0.6
 
+      // Verify user exists in database (trigger should have created it, but check just in case)
+      const { data: existingUser, error: userCheckError } = await supabase
+        .from('users')
+        .select('id')
+        .eq('id', userId)
+        .single()
+
+      if (!existingUser && !userCheckError) {
+        // User doesn't exist and no error - create it manually
+        const { error: createUserError } = await supabase
+          .from('users')
+          .insert([{ id: userId, email: '', onboarding_complete: false }])
+
+        if (createUserError) {
+          setError('Failed to create user profile: ' + createUserError.message)
+          setLoading(false)
+          return
+        }
+      }
+
       // Create goal
       const { data: goalData, error: goalError } = await supabase
         .from('goals')
