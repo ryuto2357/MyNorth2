@@ -20,6 +20,27 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Goal not found' }, { status: 404 })
   }
 
+  // Check if constellation already exists for this goal
+  const { data: existingNodes } = await supabase
+    .from('nodes')
+    .select('*')
+    .eq('goal_id', goalId)
+
+  if (existingNodes && existingNodes.length > 0) {
+    // Constellation already exists, just return it
+    const { data: existingLinks } = await supabase.from('links').select('*')
+    const nodeIds = new Set(existingNodes.map(n => n.id))
+    const filteredLinks = (existingLinks || []).filter(
+      (l: any) => nodeIds.has(l.source_id) && nodeIds.has(l.target_id)
+    )
+    return NextResponse.json({
+      success: true,
+      nodeCount: existingNodes.length,
+      linkCount: filteredLinks.length,
+      existing: true,
+    })
+  }
+
   const prompt = `Break down this student's goal into a knowledge constellation.
 
 Goal: "${goal.title}"
