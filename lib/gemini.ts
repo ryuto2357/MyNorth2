@@ -4,7 +4,7 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!)
 
 export async function chat(messages: Array<{ role: string; content: string }>, systemPrompt: string) {
   const model = genAI.getGenerativeModel({
-    model: 'gemini-1.5-flash',
+    model: 'gemini-2.5-flash-lite',
     systemInstruction: systemPrompt,
   })
 
@@ -28,7 +28,7 @@ export async function* streamChat(
   systemPrompt: string
 ) {
   const model = genAI.getGenerativeModel({
-    model: 'gemini-1.5-flash',
+    model: 'gemini-2.5-flash-lite',
     systemInstruction: systemPrompt,
   })
 
