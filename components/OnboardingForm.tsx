@@ -4,6 +4,13 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 
+interface Goal {
+  title: string
+  why: string
+  deadline: string
+  familiarity: number
+}
+
 interface OnboardingStep {
   name: string
   question: string
@@ -60,6 +67,12 @@ const steps: OnboardingStep[] = [
     hint: 'Be honest with yourself',
     type: 'select',
   },
+  {
+    name: 'multigoal',
+    question: 'Would you like to add more goals?',
+    hint: 'You can add up to 5 additional goals to focus on alongside your main goal',
+    type: 'multigoal',
+  },
 ]
 
 export default function OnboardingForm({ userId }: { userId: string }) {
@@ -67,6 +80,7 @@ export default function OnboardingForm({ userId }: { userId: string }) {
   const [currentStep, setCurrentStep] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [addingGoal, setAddingGoal] = useState(false)
 
   const [formData, setFormData] = useState({
     name: '',
@@ -79,12 +93,62 @@ export default function OnboardingForm({ userId }: { userId: string }) {
     familiarity: 5,
     freeTime: 2,
     completion: '',
+    additionalGoals: [] as Goal[],
+  })
+
+  const [tempGoal, setTempGoal] = useState<Goal>({
+    title: '',
+    why: '',
+    deadline: '',
+    familiarity: 5,
   })
 
   const handleInputChange = (field: string, value: any) => {
     setFormData((prev) => ({
       ...prev,
       [field]: value,
+    }))
+  }
+
+  const handleTempGoalChange = (field: keyof Goal, value: any) => {
+    setTempGoal((prev) => ({
+      ...prev,
+      [field]: value,
+    }))
+  }
+
+  const addGoal = () => {
+    if (!tempGoal.title.trim()) {
+      setError('Please enter a goal title')
+      return
+    }
+    if (!tempGoal.why.trim()) {
+      setError('Please enter why this goal matters')
+      return
+    }
+    if (!tempGoal.deadline) {
+      setError('Please select a deadline')
+      return
+    }
+
+    if (formData.additionalGoals.length >= 5) {
+      setError('You can add up to 5 additional goals')
+      return
+    }
+
+    setFormData((prev) => ({
+      ...prev,
+      additionalGoals: [...prev.additionalGoals, { ...tempGoal }],
+    }))
+    setTempGoal({ title: '', why: '', deadline: '', familiarity: 5 })
+    setError('')
+    setAddingGoal(false)
+  }
+
+  const removeGoal = (index: number) => {
+    setFormData((prev) => ({
+      ...prev,
+      additionalGoals: prev.additionalGoals.filter((_, i) => i !== index),
     }))
   }
 
@@ -120,6 +184,14 @@ export default function OnboardingForm({ userId }: { userId: string }) {
 
     if (currentStepData.name === 'completion' && !formData.completion) {
       setError('Please select an option')
+      return
+    }
+
+    if (currentStepData.name === 'multigoal') {
+      // Skip to submit if no additional goals, or continue if adding
+      if (currentStep < steps.length - 1) {
+        setCurrentStep(currentStep + 1)
+      }
       return
     }
 
@@ -176,30 +248,42 @@ export default function OnboardingForm({ userId }: { userId: string }) {
         }
       }
 
-      // Create goal
-      const { data: goalData, error: goalError } = await supabase
+      // Create all goals (main goal + additional goals)
+      const allGoals = [
+        {
+          user_id: userId,
+          title: formData.goal,
+          why: formData.why,
+          north_star: formData.goal,
+          deadline: formData.deadline,
+          familiarity_baseline: formData.familiarity,
+          completion_rate_history: completionRate,
+          status: 'ACTIVE',
+          priority_rank: 1,
+        },
+        ...formData.additionalGoals.map((goal, index) => ({
+          user_id: userId,
+          title: goal.title,
+          why: goal.why,
+          north_star: goal.title,
+          deadline: goal.deadline,
+          familiarity_baseline: goal.familiarity,
+          completion_rate_history: completionRate,
+          status: 'ACTIVE',
+          priority_rank: index + 2,
+        })),
+      ]
+
+      const { data: goalsData, error: goalsError } = await supabase
         .from('goals')
-        .insert([
-          {
-            user_id: userId,
-            title: formData.goal,
-            why: formData.why,
-            north_star: formData.goal,
-            deadline: formData.deadline,
-            familiarity_baseline: formData.familiarity,
-            completion_rate_history: completionRate,
-            status: 'ACTIVE',
-          },
-        ])
+        .insert(allGoals)
         .select()
 
-      if (goalError) {
-        setError(goalError.message)
+      if (goalsError) {
+        setError(goalsError.message)
         setLoading(false)
         return
       }
-
-      const goalId = goalData[0].id
 
       // Update user profile
       const updateData: any = {
@@ -227,21 +311,21 @@ export default function OnboardingForm({ userId }: { userId: string }) {
         return
       }
 
-      // Create root node for goal in Constellation
+      // Create root nodes for all goals in Constellation
+      const nodes = goalsData.map((goal, index) => ({
+        user_id: userId,
+        goal_id: goal.id,
+        label: goal.title,
+        seniority_level: 0,
+        cluster_id: `cluster-${index}`,
+        status: 'ACTIVE',
+        familiarity_score: goal.familiarity_baseline,
+        description: goal.why,
+      }))
+
       const { error: nodeError } = await supabase
         .from('nodes')
-        .insert([
-          {
-            user_id: userId,
-            goal_id: goalId,
-            label: formData.goal,
-            seniority_level: 0,
-            cluster_id: 'main',
-            status: 'ACTIVE',
-            familiarity_score: formData.familiarity,
-            description: formData.why,
-          },
-        ])
+        .insert(nodes)
 
       if (nodeError) {
         console.error('Node creation error:', nodeError)
@@ -287,7 +371,13 @@ export default function OnboardingForm({ userId }: { userId: string }) {
         {currentStepData.type === 'text' && (
           <input
             type="text"
-            value={formData[currentStepData.name as keyof typeof formData]}
+            value={
+              currentStepData.name === 'goal'
+                ? formData.goal
+                : currentStepData.name === 'name'
+                ? formData.name
+                : ''
+            }
             onChange={(e) => handleInputChange(currentStepData.name, e.target.value)}
             className="input-base"
             placeholder="Your answer..."
@@ -408,6 +498,114 @@ export default function OnboardingForm({ userId }: { userId: string }) {
             ))}
           </div>
         )}
+
+        {currentStepData.type === 'multigoal' && (
+          <div className="space-y-4">
+            {/* Display added goals */}
+            {formData.additionalGoals.length > 0 && (
+              <div className="space-y-3">
+                <p className="text-sm font-medium text-gray-700">Added Goals:</p>
+                {formData.additionalGoals.map((goal, index) => (
+                  <div key={index} className="bg-celestial-50 p-4 rounded-lg border border-celestial-200 flex justify-between items-start">
+                    <div className="flex-1">
+                      <p className="font-semibold text-obsidian">{goal.title}</p>
+                      <p className="text-sm text-gray-600 mt-1">{goal.why}</p>
+                      <p className="text-xs text-gray-500 mt-2">Deadline: {goal.deadline} | Familiarity: {goal.familiarity}/10</p>
+                    </div>
+                    <button
+                      onClick={() => removeGoal(index)}
+                      className="ml-3 text-destructive hover:text-red-700 font-medium text-sm"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Add goal form */}
+            {addingGoal ? (
+              <div className="border border-celestial-300 p-4 rounded-lg bg-celestial-50 space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Goal Title</label>
+                  <input
+                    type="text"
+                    value={tempGoal.title}
+                    onChange={(e) => handleTempGoalChange('title', e.target.value)}
+                    className="input-base"
+                    placeholder="e.g., Learn Web Development"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Why does it matter?</label>
+                  <textarea
+                    value={tempGoal.why}
+                    onChange={(e) => handleTempGoalChange('why', e.target.value)}
+                    className="input-base min-h-24 resize-none"
+                    placeholder="Explain why this goal is important to you..."
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Deadline</label>
+                    <input
+                      type="date"
+                      value={tempGoal.deadline}
+                      onChange={(e) => handleTempGoalChange('deadline', e.target.value)}
+                      className="input-base"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Familiarity</label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="range"
+                        min="0"
+                        max="10"
+                        value={tempGoal.familiarity}
+                        onChange={(e) => handleTempGoalChange('familiarity', parseInt(e.target.value))}
+                        className="flex-1"
+                      />
+                      <span className="font-bold text-celestial-600 w-8">{tempGoal.familiarity}</span>
+                    </div>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={addGoal}
+                    className="btn-primary flex-1"
+                  >
+                    Add Goal
+                  </button>
+                  <button
+                    onClick={() => {
+                      setAddingGoal(false)
+                      setTempGoal({ title: '', why: '', deadline: '', familiarity: 5 })
+                      setError('')
+                    }}
+                    className="btn-secondary flex-1"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {formData.additionalGoals.length < 5 && (
+                  <button
+                    onClick={() => setAddingGoal(true)}
+                    className="w-full border-2 border-dashed border-celestial-300 text-celestial-600 py-3 rounded-lg hover:bg-celestial-50 transition-colors font-medium"
+                  >
+                    + Add Another Goal
+                  </button>
+                )}
+                {formData.additionalGoals.length === 0 && (
+                  <p className="text-gray-600 text-center py-4">No additional goals added yet. You can add up to 5 more.</p>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Error */}
@@ -421,16 +619,26 @@ export default function OnboardingForm({ userId }: { userId: string }) {
       <div className="flex gap-3 justify-between">
         <button
           onClick={handleBack}
-          disabled={currentStep === 0 || loading}
+          disabled={currentStep === 0 || loading || addingGoal}
           className="btn-secondary disabled:opacity-50"
         >
           Back
         </button>
 
         {currentStep === steps.length - 1 ? (
-          <button onClick={handleSubmit} disabled={loading} className="btn-primary disabled:opacity-50">
-            {loading ? 'Creating your profile...' : 'Complete Onboarding'}
-          </button>
+          <div className="flex gap-3 flex-1 ml-3">
+            {addingGoal ? (
+              <div className="flex-1" /> // Spacer to push next button right
+            ) : (
+              <button
+                onClick={() => handleSubmit()}
+                disabled={loading}
+                className="btn-primary disabled:opacity-50"
+              >
+                {loading ? 'Creating your profile...' : 'Complete Onboarding'}
+              </button>
+            )}
+          </div>
         ) : (
           <button onClick={handleNext} className="btn-primary">
             Next

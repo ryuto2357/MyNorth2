@@ -190,15 +190,13 @@ export default function ConstellationPage() {
           </div>
         </div>
       ) : (
-        <div className="flex gap-4 flex-1 min-h-0 overflow-hidden">
-          {/* Graph - takes remaining space */}
-          <div className="flex-1 rounded-xl overflow-hidden bg-[#0f0f1a] min-h-[400px]">
-            <ConstellationGraph nodes={nodes} links={links} onNodeClick={setSelectedNode} />
-          </div>
+        <div className="flex-1 rounded-xl overflow-hidden bg-[#0f0f1a] min-h-[400px] relative">
+          {/* Graph */}
+          <ConstellationGraph nodes={nodes} links={links} onNodeClick={setSelectedNode} />
 
-          {/* Node detail panel - hidden on mobile, fixed width on desktop */}
+          {/* Node detail panel - overlay on top of graph */}
           {selectedNode && (
-            <div className="hidden md:flex w-64 flex-shrink-0 card flex-col gap-4 overflow-y-auto max-h-full">
+            <div className="hidden md:flex absolute top-6 right-6 w-64 card flex-col gap-4 overflow-y-auto max-h-[calc(100vh-200px)] shadow-2xl z-40">
               <div className="flex items-start gap-2">
                 <div
                   className="w-3 h-3 rounded-full mt-1 flex-shrink-0"
