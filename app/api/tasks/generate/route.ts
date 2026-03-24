@@ -21,6 +21,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Goal not found' }, { status: 404 })
   }
 
+  // ============================================
+  // STEP 1: Get nodes (constellation topics)
+  // ============================================
   let nodes = (
     await supabase
       .from('nodes')
@@ -130,25 +133,126 @@ Make everything specific and concrete to the goal. No generic placeholders.`
     nodes = insertedNodes
   }
 
+  // ============================================
+  // STEP 2: Call workload engine to get constraints
+  // ============================================
+  let workloadData: any
+  try {
+    const workloadRes = await fetch(new URL('/api/workload/calculate', process.env.VERCEL_URL || 'http://localhost:3000'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ goalId, userId }),
+    })
+
+    if (!workloadRes.ok) {
+      console.error('Workload calculation failed:', await workloadRes.text())
+      return NextResponse.json({ error: 'Failed to calculate workload' }, { status: 500 })
+    }
+
+    workloadData = await workloadRes.json()
+  } catch (err: any) {
+    console.error('Workload fetch error:', err)
+    return NextResponse.json({ error: `Workload engine error: ${err.message}` }, { status: 500 })
+  }
+
+  let daily_budget_minutes = workloadData.daily_budget_minutes
+  let task_count = workloadData.task_count
+  let minutes_per_task = workloadData.minutes_per_task
+  const in_crunch_mode = workloadData.in_crunch_mode
+  let multi_goal_context = ''
+
+  // ============================================
+  // STEP 2.5: Check for multi-goal conflicts (arbitration)
+  // ============================================
+  const { data: activeGoals } = await supabase
+    .from('goals')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('status', 'ACTIVE')
+
+  if (activeGoals && activeGoals.length > 1) {
+    try {
+      const arbitrationRes = await fetch(
+        new URL('/api/goals/arbitrate', process.env.VERCEL_URL || 'http://localhost:3000'),
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId }),
+        }
+      )
+
+      if (arbitrationRes.ok) {
+        const arbitrationData = await arbitrationRes.json()
+
+        if (arbitrationData.hasConflict) {
+          // Find THIS goal's allocation
+          const thisGoalAllocation = arbitrationData.allocations.find(
+            (a: any) => a.goalId === goalId
+          )
+
+          if (thisGoalAllocation) {
+            // Use allocated budget instead of raw workload budget
+            daily_budget_minutes = thisGoalAllocation.allocated_daily_budget_min
+            task_count = Math.max(1, Math.ceil(daily_budget_minutes / 20))
+            task_count = Math.min(11, task_count)
+            minutes_per_task = Math.floor(daily_budget_minutes / task_count)
+
+            multi_goal_context = `
+
+**⚠️ MULTI-GOAL MODE**: You have ${activeGoals.length} active goals.
+Your time for "${goal.title}" has been allocated to: ${daily_budget_minutes} min/day
+This is ${Math.round((daily_budget_minutes / workloadData.daily_budget_minutes) * 100)}% of your original request.
+Focus on highest-impact items.`
+          }
+        } else {
+          multi_goal_context = `
+
+✓ Multi-goal check: All goals fit within your schedule (${activeGoals.length} goals total).`
+        }
+      }
+    } catch (arbError) {
+      console.error('Arbitration check failed:', arbError)
+      // Continue with raw workload budget if arbitration fails
+    }
+  }
+
+  // ============================================
+  // STEP 3: Generate tasks using workload constraints
+  // ============================================
   const nodeList = nodes
     .map((n: any) => `- [node_id: "${n.id}"] "${n.label}" (level ${n.seniority_level})`)
     .join('\n')
 
-  const prompt = `Generate a 7-day study plan for a student.
+  const prompt = `Generate exactly ${task_count} tasks for TODAY.
 
 Goal: "${goal.title}"
 Why: "${goal.why || ''}"
 Deadline: ${goal.deadline || 'Not set'}
+Time budget: ${daily_budget_minutes} minutes total (must fit this budget)
 
 Topics available:
 ${nodeList}
 
-Create exactly 14 tasks spread across 7 days (2 per day).
+Create exactly ${task_count} tasks that sum to approximately ${daily_budget_minutes} minutes.
+${
+  in_crunch_mode
+    ? `
+IMPORTANT: This is CRUNCH MODE. The student is in the final push before deadline.
+- Make tasks VERY actionable and hyper-specific
+- Each task MUST be completable in ${minutes_per_task} min or less
+- Focus on highest-impact items only
+- Assume student will be tired but motivated
+- Celebrate small wins
+`
+    : ''
+}${multi_goal_context}
+
 Each task must:
-- Take 15-30 minutes (pick a specific duration)
+- Take EXACTLY ${minutes_per_task} minutes (not more, this is fixed)
 - Be specific and actionable (e.g. "Watch intro video on X", "Do 5 practice problems for Y")
 - Use one of the node_ids above (copy the exact UUID)
-- Be at morning (09:00), afternoon (14:00), or evening (19:00)
+- Have a time: one at 09:00 (morning), one at 14:00 (afternoon), and one at 19:00 (evening)
+- Rotate times across tasks
 
 Return ONLY valid JSON:
 {
@@ -156,7 +260,7 @@ Return ONLY valid JSON:
     {
       "title": "Specific actionable task",
       "description": "Exactly what to do in one sentence",
-      "duration_minutes": 20,
+      "duration_minutes": ${minutes_per_task},
       "day_offset": 0,
       "node_id": "exact-uuid-from-list",
       "scheduled_time": "09:00"
@@ -164,7 +268,7 @@ Return ONLY valid JSON:
   ]
 }
 
-day_offset: 0=today, 1=tomorrow, up to 6. Vary the times across days.`
+ALL tasks must be ${minutes_per_task} minutes exactly.`
 
   let raw: string
   try {
@@ -199,7 +303,7 @@ day_offset: 0=today, 1=tomorrow, up to 6. Vary the times across days.`
       node_id: t.node_id,
       title: String(t.title).substring(0, 499),
       description: t.description || '',
-      duration_minutes: t.duration_minutes || 20,
+      duration_minutes: t.duration_minutes || minutes_per_task,
       scheduled_for: format(addDays(today, t.day_offset || 0), 'yyyy-MM-dd'),
       scheduled_time: t.scheduled_time || '09:00',
       status: 'PENDING',
@@ -218,5 +322,23 @@ day_offset: 0=today, 1=tomorrow, up to 6. Vary the times across days.`
     return NextResponse.json({ error: taskError.message }, { status: 500 })
   }
 
-  return NextResponse.json({ success: true, taskCount: insertedTasks.length })
+  // ============================================
+  // STEP 4: Update goal with workload calculations
+  // ============================================
+  await supabase
+    .from('goals')
+    .update({
+      inefficiency_last_calculated: new Date().toISOString(),
+    })
+    .eq('id', goalId)
+
+  return NextResponse.json({
+    success: true,
+    taskCount: insertedTasks.length,
+    dailyBudget: daily_budget_minutes,
+    minutesPerTask: minutes_per_task,
+    inCrunchMode: in_crunch_mode,
+    workloadData: workloadData,
+  })
 }
+

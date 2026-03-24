@@ -42,7 +42,7 @@ export async function POST(request: NextRequest) {
       why: goalData.why || '',
       familiarity: goalData.familiarity_baseline || 5,
       freeTimeHours: userData.schedule?.daily_free_time_hours || 2,
-      tone: 'friendly', // Default tone for demo
+      tone: (userData.tone_preference as 'straightforward' | 'friendly' | 'supportive') || 'friendly',
     })
 
     // Get chat history

@@ -68,6 +68,12 @@ const steps: OnboardingStep[] = [
     type: 'select',
   },
   {
+    name: 'tone',
+    question: 'When you\'re having a tough day, how do you want me to support you?',
+    hint: 'This helps Morgan personalize how she communicates with you',
+    type: 'tone',
+  },
+  {
     name: 'multigoal',
     question: 'Would you like to add more goals?',
     hint: 'You can add up to 5 additional goals to focus on alongside your main goal',
@@ -93,6 +99,7 @@ export default function OnboardingForm({ userId }: { userId: string }) {
     familiarity: 5,
     freeTime: 2,
     completion: '',
+    tone: 'friendly',
     additionalGoals: [] as Goal[],
   })
 
@@ -184,6 +191,11 @@ export default function OnboardingForm({ userId }: { userId: string }) {
 
     if (currentStepData.name === 'completion' && !formData.completion) {
       setError('Please select an option')
+      return
+    }
+
+    if (currentStepData.name === 'tone' && !formData.tone) {
+      setError('Please select a tone preference')
       return
     }
 
@@ -291,6 +303,7 @@ export default function OnboardingForm({ userId }: { userId: string }) {
         age: parseInt(formData.age),
         school: formData.school,
         grade: formData.grade,
+        tone_preference: formData.tone,
         onboarding_complete: true,
         schedule: {
           // @ts-ignore
@@ -494,6 +507,34 @@ export default function OnboardingForm({ userId }: { userId: string }) {
                   className="mr-3"
                 />
                 <span className="text-gray-700">{option}</span>
+              </label>
+            ))}
+          </div>
+        )}
+
+        {currentStepData.type === 'tone' && (
+          <div className="space-y-2">
+            {[
+              { value: 'straightforward', label: 'Direct & Accountable', desc: 'Challenge me respectfully, keep it real' },
+              { value: 'friendly', label: 'Casual & Warm', desc: 'Build rapport, use my language' },
+              { value: 'supportive', label: 'Gentle & Encouraging', desc: 'Acknowledge my feelings, be patient' },
+            ].map((option) => (
+              <label
+                key={option.value}
+                className="flex items-start p-3 border border-gray-300 rounded-lg cursor-pointer hover:bg-gray-50 transition"
+              >
+                <input
+                  type="radio"
+                  name="tone"
+                  value={option.value}
+                  checked={formData.tone === option.value}
+                  onChange={(e) => handleInputChange('tone', e.target.value)}
+                  className="mr-3 mt-1"
+                />
+                <div>
+                  <span className="text-gray-700 font-medium">{option.label}</span>
+                  <p className="text-xs text-gray-500 mt-0.5">{option.desc}</p>
+                </div>
               </label>
             ))}
           </div>
