@@ -3,6 +3,7 @@ import { chat } from '@/lib/gemini'
 import { buildMorganSystemPrompt, buildMorganSystemPromptFromCorpus } from '@/lib/morgan'
 import { createClient } from '@supabase/supabase-js'
 import { getUserCorpus } from '@/lib/user-corpus'
+import { detectCrisisKeywords, buildCrisisResponse } from '@/lib/crisis-detection'
 
 export async function POST(request: NextRequest) {
   // Initialize inside handler to avoid build-time env var issues
@@ -96,6 +97,66 @@ export async function POST(request: NextRequest) {
       },
     ])
 
+    // ============================================
+    // CRISIS DETECTION & SAFETY ROUTING
+    // ============================================
+    const crisisCheck = detectCrisisKeywords(message)
+
+    if (crisisCheck.detected) {
+      // Get student tone preference for compassionate response
+      const userTone =
+        userData.tone_preference as 'straightforward' | 'friendly' | 'supportive'
+      const crisisResponse = buildCrisisResponse(crisisCheck.severity!, userTone)
+
+      // Log crisis alert to database
+      if (crisisCheck.severity === 'T1_IMMINENT' || crisisCheck.severity === 'T2_CONCERNING') {
+        try {
+          await fetch(
+            new URL('/api/crisis/alert', process.env.VERCEL_URL || 'http://localhost:3000'),
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                userId,
+                goalId,
+                severity: crisisCheck.severity,
+                message: message,
+                keywords: crisisCheck.keywords,
+              }),
+            }
+          )
+        } catch (alertError) {
+          console.error('Failed to send crisis alert:', alertError)
+          // Continue anyway—student needs response
+        }
+      }
+
+      // Save crisis response to chat history
+      await supabase.from('chat_messages').insert([
+        {
+          session_id: chatSessionId,
+          user_id: userId,
+          role: 'assistant',
+          content: crisisResponse,
+        },
+      ])
+
+      // Return crisis response immediately
+      return NextResponse.json({
+        sessionId: chatSessionId,
+        response: crisisResponse,
+        role: 'assistant',
+        crisis: {
+          detected: true,
+          severity: crisisCheck.severity,
+          message: 'Crisis detected. Returning safety resources.',
+        },
+      })
+    }
+
+    // ============================================
+    // NORMAL MORGAN RESPONSE (no crisis detected)
+    // ============================================
     // Get response from Gemini
     const response = await chat(messages, systemPrompt)
 
