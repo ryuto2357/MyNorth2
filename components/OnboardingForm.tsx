@@ -344,6 +344,18 @@ export default function OnboardingForm({ userId }: { userId: string }) {
         console.error('Node creation error:', nodeError)
       }
 
+      // Build initial user_corpus for Morgan context
+      try {
+        await fetch('/api/user-corpus', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId }),
+        })
+      } catch (corpusError) {
+        console.error('Failed to build user_corpus:', corpusError)
+        // Don't block navigation if corpus build fails
+      }
+
       // Redirect to dashboard
       router.push('/app')
     } catch (err: any) {

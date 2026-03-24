@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { updateGoalCompletionRate } from '@/lib/completion-rate'
+import { invalidateUserCorpus } from '@/lib/user-corpus'
 
 export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
   const { status } = await req.json()
@@ -58,6 +59,8 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   if (currentTask.goal_id && currentTask.user_id) {
     try {
       await updateGoalCompletionRate(supabase, currentTask.goal_id, currentTask.user_id)
+      // Invalidate user_corpus cache so next Morgan call has fresh data
+      await invalidateUserCorpus(supabase, currentTask.user_id)
     } catch (rateError) {
       console.error('Error updating completion rate:', rateError)
       // Don't fail the request if completion rate update fails

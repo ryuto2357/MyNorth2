@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { chat } from '@/lib/gemini'
-import { buildMorganSystemPrompt } from '@/lib/morgan'
+import { buildMorganSystemPrompt, buildMorganSystemPromptFromCorpus } from '@/lib/morgan'
 import { createClient } from '@supabase/supabase-js'
+import { getUserCorpus } from '@/lib/user-corpus'
 
 export async function POST(request: NextRequest) {
   // Initialize inside handler to avoid build-time env var issues
@@ -35,15 +36,24 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'User or goal not found' }, { status: 404 })
     }
 
-    // Build Morgan's system prompt
-    const systemPrompt = buildMorganSystemPrompt({
-      userName: userData.name || 'Friend',
-      goal: goalData.title,
-      why: goalData.why || '',
-      familiarity: goalData.familiarity_baseline || 5,
-      freeTimeHours: userData.schedule?.daily_free_time_hours || 2,
-      tone: (userData.tone_preference as 'straightforward' | 'friendly' | 'supportive') || 'friendly',
-    })
+    // Try to get full user_corpus for rich context
+    let systemPrompt = ''
+    const corpus = await getUserCorpus(supabase, userId)
+
+    if (corpus) {
+      // Use corpus-aware prompt with full context
+      systemPrompt = buildMorganSystemPromptFromCorpus(corpus)
+    } else {
+      // Fallback to legacy simple prompt
+      systemPrompt = buildMorganSystemPrompt({
+        userName: userData.name || 'Friend',
+        goal: goalData.title,
+        why: goalData.why || '',
+        familiarity: goalData.familiarity_baseline || 5,
+        freeTimeHours: userData.schedule?.daily_free_time_hours || 2,
+        tone: (userData.tone_preference as 'straightforward' | 'friendly' | 'supportive') || 'friendly',
+      })
+    }
 
     // Get chat history
     let chatSessionId = sessionId
