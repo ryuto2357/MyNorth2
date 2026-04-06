@@ -1,23 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
-import { getUserCorpus, buildUserCorpus } from '@/lib/user-corpus'
+import { buildUserCorpus } from '@/lib/user-corpus'
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const userId = searchParams.get('userId')
-  const forceRebuild = searchParams.get('forceRebuild') === 'true'
 
   if (!userId) {
     return NextResponse.json({ error: 'Missing userId' }, { status: 400 })
   }
 
-  const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  )
-
   try {
-    const corpus = await getUserCorpus(supabase, userId, forceRebuild)
+    const corpus = await buildUserCorpus(userId)
 
     if (!corpus) {
       return NextResponse.json({ error: 'Failed to build corpus' }, { status: 500 })
@@ -26,9 +20,6 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       success: true,
       corpus,
-      age_minutes: corpus.metadata.last_updated
-        ? Math.round((new Date().getTime() - new Date(corpus.metadata.last_updated).getTime()) / (1000 * 60))
-        : 0,
     })
   } catch (error: any) {
     console.error('Corpus fetch error:', error)
@@ -53,7 +44,7 @@ export async function POST(req: NextRequest) {
   )
 
   try {
-    const corpus = await buildUserCorpus(supabase, userId)
+    const corpus = await buildUserCorpus(userId)
 
     if (!corpus) {
       return NextResponse.json({ error: 'Failed to build corpus' }, { status: 500 })

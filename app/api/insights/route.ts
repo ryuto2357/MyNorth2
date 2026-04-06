@@ -3,6 +3,8 @@ import { createServerClient } from '@/lib/supabase-server'
 import { getAuthUser } from '@/lib/auth-api'
 import { computeInsights } from '@/lib/insights'
 
+export const dynamic = 'force-dynamic'
+
 export async function GET(request: NextRequest) {
   try {
     const authUser = await getAuthUser(request)

@@ -3,6 +3,8 @@ import { createServerClient } from '@/lib/supabase-server'
 import { getAuthUser } from '@/lib/auth-api'
 import { chat } from '@/lib/gemini'
 
+export const dynamic = 'force-dynamic'
+
 export async function POST(req: NextRequest) {
   try {
     const authUser = await getAuthUser(req)
