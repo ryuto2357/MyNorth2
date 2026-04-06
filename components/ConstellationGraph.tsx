@@ -24,7 +24,6 @@ interface Props {
   nodes: Node[]
   links: Link[]
   onNodeClick?: (node: Node) => void
-  userId?: string
 }
 
 function getNodeColor(node: any) {
@@ -35,13 +34,11 @@ function getNodeColor(node: any) {
   return '#3b82f6'
 }
 
-function getNodeSize(node: any) {
-  if (node.seniority_level === 0) return 10
-  if (node.seniority_level === 1) return 6
-  return 3
+function getNodeSize(_node: any) {
+  return 4
 }
 
-export default function ConstellationGraph({ nodes, links, onNodeClick, userId }: Props) {
+export default function ConstellationGraph({ nodes, links, onNodeClick }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [dimensions, setDimensions] = useState({ width: 800, height: 500 })
 
@@ -58,24 +55,6 @@ export default function ConstellationGraph({ nodes, links, onNodeClick, userId }
     window.addEventListener('resize', update)
     return () => window.removeEventListener('resize', update)
   }, [])
-
-  const handleNodeClick = async (node: any) => {
-    // Track node access in background (don't block UI)
-    if (userId) {
-      try {
-        await fetch('/api/nodes/track-access', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ nodeId: node.id, userId }),
-        })
-      } catch (err) {
-        console.error('Failed to track node access:', err)
-      }
-    }
-
-    // Call the original handler
-    onNodeClick?.(node)
-  }
 
   const graphData = {
     nodes: nodes.map(n => ({ ...n })),
@@ -94,7 +73,7 @@ export default function ConstellationGraph({ nodes, links, onNodeClick, userId }
         nodeVal={getNodeSize}
         linkColor={() => '#ffffff20'}
         linkWidth={1.5}
-        onNodeClick={handleNodeClick}
+        onNodeClick={(node: any) => onNodeClick?.(node)}
         nodeCanvasObject={(node: any, ctx, globalScale) => {
           const size = getNodeSize(node)
           const color = getNodeColor(node)

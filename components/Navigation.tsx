@@ -27,7 +27,7 @@ export default function Navigation() {
       {/* Sidebar - Desktop */}
       <aside className="hidden md:flex flex-col w-64 bg-white border-r border-gray-200 p-4">
         <Link href="/" className="flex items-center gap-2 mb-8">
-          <span className="text-2xl font-bold text-celestial-600">MyNorth</span>
+          <span className="text-2xl font-bold text-gray-700">MyNorth</span>
         </Link>
 
         <nav className="flex-1 space-y-2">
@@ -37,7 +37,7 @@ export default function Navigation() {
               href={item.href}
               className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${
                 pathname === item.href
-                  ? 'bg-celestial-100 text-celestial-700 font-semibold'
+                  ? 'bg-gray-100 text-gray-800 font-semibold'
                   : 'text-gray-700 hover:bg-gray-100'
               }`}
             >
@@ -64,7 +64,7 @@ export default function Navigation() {
               href={item.href}
               className={`flex flex-col items-center gap-1 px-4 py-2 rounded transition-all ${
                 pathname === item.href
-                  ? 'text-celestial-600'
+                  ? 'text-gray-700'
                   : 'text-gray-600'
               }`}
             >

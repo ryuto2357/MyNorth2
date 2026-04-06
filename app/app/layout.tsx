@@ -12,15 +12,25 @@ export default function AppLayout({
 }) {
   const router = useRouter()
   const [loading, setLoading] = useState(true)
+  const [isOnboarding, setIsOnboarding] = useState(false)
 
   useEffect(() => {
     const checkAuth = async () => {
       const { data: { session } } = await supabase.auth.getSession()
       if (!session) {
         router.push('/auth/login')
-      } else {
-        setLoading(false)
+        return
       }
+
+      // Check onboarding status
+      const { data: profile } = await supabase
+        .from('users')
+        .select('onboarding_complete')
+        .eq('id', session.user.id)
+        .single()
+
+      setIsOnboarding(profile?.onboarding_complete === false)
+      setLoading(false)
     }
 
     checkAuth()
@@ -39,7 +49,7 @@ export default function AppLayout({
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="text-center animate-pulse">
-          <div className="text-celestial-600">Loading...</div>
+          <div className="text-gray-700 font-medium">Morgan is waking up...</div>
         </div>
       </div>
     )
@@ -47,8 +57,8 @@ export default function AppLayout({
 
   return (
     <div className="flex min-h-screen bg-gray-50">
-      <Navigation />
-      <main className="flex-1">
+      {!isOnboarding && <Navigation />}
+      <main className={`flex-1 ${isOnboarding ? 'w-full' : ''}`}>
         {children}
       </main>
     </div>

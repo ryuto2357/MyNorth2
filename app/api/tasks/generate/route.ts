@@ -1,344 +1,186 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
+import { createServerClient } from '@/lib/supabase-server'
+import { getAuthUser } from '@/lib/auth-api'
 import { chat } from '@/lib/gemini'
-import { addDays, format } from 'date-fns'
+import { buildUserCorpus } from '@/lib/user-corpus'
+import { computeFrontier } from '@/lib/game-plan'
+import { format } from 'date-fns'
+import { GamePlanNode, GamePlanLink } from '@/types'
 
-export async function POST(req: NextRequest) {
-  const { goalId, userId } = await req.json()
-
-  const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  )
-
-  const { data: goal } = await supabase
-    .from('goals')
-    .select('*')
-    .eq('id', goalId)
-    .single()
-
-  if (!goal) {
-    return NextResponse.json({ error: 'Goal not found' }, { status: 404 })
-  }
-
-  // ============================================
-  // STEP 1: Get nodes (constellation topics)
-  // ============================================
-  let nodes = (
-    await supabase
-      .from('nodes')
-      .select('*')
-      .eq('goal_id', goalId)
-      .in('seniority_level', [1, 2])
-      .order('seniority_level')
-  ).data
-
-  // Auto-generate constellation if needed
-  if (!nodes || nodes.length === 0) {
-    const constellationPrompt = `Break down this student's goal into a knowledge constellation.
-
-Goal: "${goal.title}"
-Why they want it: "${goal.why || 'Not specified'}"
-Deadline: ${goal.deadline || 'Not set'}
-Current familiarity (0-10): ${goal.familiarity_baseline || 0}
-
-Create a constellation with:
-- 1 ROOT node (the goal itself, seniority_level: 0)
-- 3-5 ACHIEVEMENT nodes (major milestones to reach the goal, seniority_level: 1)
-- 2-3 SKILL nodes per achievement (specific skills/topics to learn, seniority_level: 2)
-
-Return ONLY valid JSON like this:
-{
-  "nodes": [
-    {
-      "label": "Short node title (max 35 chars)",
-      "description": "What this covers in 1-2 sentences",
-      "seniority_level": 0,
-      "cluster_id": "root",
-      "familiarity_score": ${goal.familiarity_baseline || 3}
+/**
+ * Brace-balancing JSON extractor.
+ */
+function extractJSON(text: string) {
+  const start = text.indexOf('{')
+  if (start === -1) return null
+  let depth = 0
+  for (let i = start; i < text.length; i++) {
+    if (text[i] === '{') depth++
+    else if (text[i] === '}') {
+      depth--
+      if (depth === 0) return text.slice(start, i + 1)
     }
-  ],
-  "links": [
-    { "source_label": "Parent label", "target_label": "Child label", "relation_type": "PARENT_OF" }
-  ]
+  }
+  return null
 }
 
-Make everything specific and concrete to the goal. No generic placeholders.`
-
-    let raw: string
-    try {
-      raw = await chat(
-        [{ role: 'user', content: constellationPrompt }],
-        'You output only valid JSON. No markdown, no explanation, just the JSON object.'
-      )
-    } catch (err: any) {
-      return NextResponse.json(
-        { error: `Could not generate constellation: ${err.message}` },
-        { status: 500 }
-      )
-    }
-
-    const jsonMatch = raw.match(/\{[\s\S]*\}/)
-    if (!jsonMatch) {
-      return NextResponse.json({ error: 'Could not parse constellation response' }, { status: 500 })
-    }
-
-    let parsed: any
-    try {
-      parsed = JSON.parse(jsonMatch[0])
-    } catch {
-      return NextResponse.json({ error: 'Invalid constellation JSON from AI' }, { status: 500 })
-    }
-
-    const { nodes: nodeData, links: linkData } = parsed
-
-    const nodeInserts = nodeData.map((n: any) => ({
-      user_id: userId,
-      goal_id: goalId,
-      label: String(n.label).substring(0, 499),
-      description: n.description || '',
-      seniority_level: n.seniority_level,
-      cluster_id: n.cluster_id || 'default',
-      familiarity_score: n.familiarity_score || 0,
-      status: 'ACTIVE',
-    }))
-
-    const { data: insertedNodes, error: nodeError } = await supabase
-      .from('nodes')
-      .insert(nodeInserts)
-      .select()
-
-    if (nodeError || !insertedNodes) {
-      return NextResponse.json({ error: nodeError?.message || 'Failed to create nodes' }, { status: 500 })
-    }
-
-    const labelMap: Record<string, string> = {}
-    for (const node of insertedNodes) {
-      labelMap[node.label] = node.id
-    }
-
-    const linkInserts = (linkData || [])
-      .filter((l: any) => labelMap[l.source_label] && labelMap[l.target_label])
-      .map((l: any) => ({
-        source_id: labelMap[l.source_label],
-        target_id: labelMap[l.target_label],
-        relation_type: l.relation_type || 'PARENT_OF',
-        strength: 1.0,
-      }))
-
-    if (linkInserts.length > 0) {
-      await supabase.from('links').insert(linkInserts)
-    }
-
-    nodes = insertedNodes
-  }
-
-  // ============================================
-  // STEP 2: Call workload engine to get constraints
-  // ============================================
-  let workloadData: any
+export async function POST(req: NextRequest) {
   try {
-    const workloadRes = await fetch(new URL('/api/workload/calculate', process.env.VERCEL_URL || 'http://localhost:3000'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ goalId, userId }),
-    })
-
-    if (!workloadRes.ok) {
-      console.error('Workload calculation failed:', await workloadRes.text())
-      return NextResponse.json({ error: 'Failed to calculate workload' }, { status: 500 })
+    const authUser = await getAuthUser(req)
+    if (!authUser) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    workloadData = await workloadRes.json()
-  } catch (err: any) {
-    console.error('Workload fetch error:', err)
-    return NextResponse.json({ error: `Workload engine error: ${err.message}` }, { status: 500 })
-  }
+    const { goalId } = await req.json()
+    if (!goalId) return NextResponse.json({ error: 'goalId is required' }, { status: 400 })
 
-  let daily_budget_minutes = workloadData.daily_budget_minutes
-  let task_count = workloadData.task_count
-  let minutes_per_task = workloadData.minutes_per_task
-  const in_crunch_mode = workloadData.in_crunch_mode
-  let multi_goal_context = ''
+    const userId = authUser.id
+    const supabase = createServerClient()
 
-  // ============================================
-  // STEP 2.5: Check for multi-goal conflicts (arbitration)
-  // ============================================
-  const { data: activeGoals } = await supabase
-    .from('goals')
-    .select('id')
-    .eq('user_id', userId)
-    .eq('status', 'ACTIVE')
+    // 1. Fetch goal and verify ownership
+    const { data: goal } = await supabase
+      .from('goals')
+      .select('id, title, why')
+      .eq('id', goalId)
+      .eq('user_id', userId)
+      .single()
 
-  if (activeGoals && activeGoals.length > 1) {
-    try {
-      const arbitrationRes = await fetch(
-        new URL('/api/goals/arbitrate', process.env.VERCEL_URL || 'http://localhost:3000'),
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId }),
-        }
-      )
+    if (!goal) return NextResponse.json({ error: 'Goal not found' }, { status: 404 })
 
-      if (arbitrationRes.ok) {
-        const arbitrationData = await arbitrationRes.json()
+    // 2. Compute Frontier — fetch nodes first, then links by node IDs
+    const nodesRes = await supabase
+      .from('game_plan_nodes')
+      .select('*')
+      .eq('goal_id', goalId)
+      .eq('user_id', userId)
 
-        if (arbitrationData.hasConflict) {
-          // Find THIS goal's allocation
-          const thisGoalAllocation = arbitrationData.allocations.find(
-            (a: any) => a.goalId === goalId
-          )
+    const nodeIds = (nodesRes.data || []).map(n => n.id)
+    const linksRes = nodeIds.length > 0
+      ? await supabase.from('game_plan_links').select('*').in('source_id', nodeIds)
+      : { data: [] }
 
-          if (thisGoalAllocation) {
-            // Use allocated budget instead of raw workload budget
-            daily_budget_minutes = thisGoalAllocation.allocated_daily_budget_min
-            task_count = Math.max(1, Math.ceil(daily_budget_minutes / 20))
-            task_count = Math.min(11, task_count)
-            minutes_per_task = Math.floor(daily_budget_minutes / task_count)
+    const allNodes = (nodesRes.data || []) as GamePlanNode[]
+    const allLinks = (linksRes.data || []) as GamePlanLink[]
 
-            multi_goal_context = `
+    const { frontier } = computeFrontier(allNodes, allLinks)
 
-**⚠️ MULTI-GOAL MODE**: You have ${activeGoals.length} active goals.
-Your time for "${goal.title}" has been allocated to: ${daily_budget_minutes} min/day
-This is ${Math.round((daily_budget_minutes / workloadData.daily_budget_minutes) * 100)}% of your original request.
-Focus on highest-impact items.`
-          }
-        } else {
-          multi_goal_context = `
-
-✓ Multi-goal check: All goals fit within your schedule (${activeGoals.length} goals total).`
-        }
-      }
-    } catch (arbError) {
-      console.error('Arbitration check failed:', arbError)
-      // Continue with raw workload budget if arbitration fails
+    if (frontier.length === 0) {
+      return NextResponse.json({ error: 'No unlocked nodes in the Game Plan. All prerequisites are locked.' }, { status: 400 })
     }
-  }
 
-  // ============================================
-  // STEP 3: Generate tasks using workload constraints
-  // ============================================
-  const nodeList = nodes
-    .map((n: any) => `- [node_id: "${n.id}"] "${n.label}" (level ${n.seniority_level})`)
-    .join('\n')
+    // 3. Load user corpus for context
+    const corpus = await buildUserCorpus(userId)
 
-  const prompt = `Generate exactly ${task_count} tasks for TODAY.
+    // 4. Construct Morgan Prompt
+    const frontierList = frontier.map(n => 
+      `- [node_id: "${n.id}"] "${n.title}" (${n.gate_type}): ${n.completion_definition}`
+    ).join('\n')
 
+    const prompt = `As Morgan, generate today's actionable tasks for this student's goal.
+
+STUDENT CONTEXT:
+Name: ${corpus.identity.name}
 Goal: "${goal.title}"
-Why: "${goal.why || ''}"
-Deadline: ${goal.deadline || 'Not set'}
-Time budget: ${daily_budget_minutes} minutes total (must fit this budget)
+Why: "${goal.why || 'Not specified'}"
 
-Topics available:
-${nodeList}
+ACTIVE FRONTIER (Unlocked nodes you can work on today):
+${frontierList}
 
-Create exactly ${task_count} tasks that sum to approximately ${daily_budget_minutes} minutes.
-${
-  in_crunch_mode
-    ? `
-IMPORTANT: This is CRUNCH MODE. The student is in the final push before deadline.
-- Make tasks VERY actionable and hyper-specific
-- Each task MUST be completable in ${minutes_per_task} min or less
-- Focus on highest-impact items only
-- Assume student will be tired but motivated
-- Celebrate small wins
-`
-    : ''
-}${multi_goal_context}
-
-Each task must:
-- Take EXACTLY ${minutes_per_task} minutes (not more, this is fixed)
-- Be specific and actionable (e.g. "Watch intro video on X", "Do 5 practice problems for Y")
-- Use one of the node_ids above (copy the exact UUID)
-- Have a time: one at 09:00 (morning), one at 14:00 (afternoon), and one at 19:00 (evening)
-- Rotate times across tasks
+RULES:
+1. Generate 2-4 atomic TASK-level steps derived from the frontier nodes above.
+2. Each task MUST have a clear "completion_definition" (what success looks like).
+3. Outcomes only. NO time limits, NO "study for X minutes".
+4. Tasks must be immediately actionable with zero ambiguity.
+5. Every task MUST reference exactly one "node_id" from the frontier list above.
+6. The student decides how long to spend on each task.
 
 Return ONLY valid JSON:
 {
   "tasks": [
     {
-      "title": "Specific actionable task",
-      "description": "Exactly what to do in one sentence",
-      "duration_minutes": ${minutes_per_task},
-      "day_offset": 0,
       "node_id": "exact-uuid-from-list",
-      "scheduled_time": "09:00"
+      "title": "Short actionable task title",
+      "completion_definition": "Concrete outcome to verify task is done",
+      "scheduled_time": "09:00" | "14:00" | "19:00"
     }
   ]
-}
+}`
 
-ALL tasks must be ${minutes_per_task} minutes exactly.`
-
-  let raw: string
-  try {
-    raw = await chat(
+    let raw = await chat(
       [{ role: 'user', content: prompt }],
-      'You output only valid JSON. No markdown, no explanation, just the JSON object.'
+      "You output ONLY valid JSON. Outcomes only, no time metrics."
     )
-  } catch (err: any) {
-    return NextResponse.json({ error: `Gemini error: ${err.message}` }, { status: 500 })
-  }
 
-  const jsonMatch = raw.match(/\{[\s\S]*\}/)
-  if (!jsonMatch) {
-    return NextResponse.json({ error: 'Could not parse AI response' }, { status: 500 })
-  }
+    let jsonStr = extractJSON(raw)
+    let parsed: { tasks?: any[] } | null = null
+    
+    if (jsonStr) {
+      try {
+        parsed = JSON.parse(jsonStr)
+      } catch (e) {
+        console.error('[TaskGen] Initial JSON parse failed:', e)
+      }
+    }
 
-  let parsed: any
-  try {
-    parsed = JSON.parse(jsonMatch[0])
-  } catch {
-    return NextResponse.json({ error: 'Invalid JSON from AI' }, { status: 500 })
-  }
+    // Retry once if parsing fails
+    if (!parsed || !parsed.tasks || !Array.isArray(parsed.tasks)) {
+      raw = await chat(
+        [{ role: 'user', content: prompt }, { role: 'model', content: raw }, { role: 'user', content: "Invalid JSON. Return only a valid JSON object with a 'tasks' array." }],
+        "You output ONLY valid JSON."
+      )
+      jsonStr = extractJSON(raw)
+      if (jsonStr) {
+        try {
+          parsed = JSON.parse(jsonStr)
+        } catch (e) {
+          console.error('[TaskGen] Retry JSON parse failed:', e)
+        }
+      }
+    }
 
-  const nodeIdSet = new Set(nodes.map((n: any) => n.id))
-  const today = new Date()
+    if (!parsed || !parsed.tasks || !Array.isArray(parsed.tasks)) {
+      return NextResponse.json({ error: 'AI failed to generate valid task structure' }, { status: 500 })
+    }
 
-  const taskInserts = (parsed.tasks || [])
-    .filter((t: any) => nodeIdSet.has(t.node_id))
-    .map((t: any) => ({
-      user_id: userId,
-      goal_id: goalId,
-      node_id: t.node_id,
-      title: String(t.title).substring(0, 499),
-      description: t.description || '',
-      duration_minutes: t.duration_minutes || minutes_per_task,
-      scheduled_for: format(addDays(today, t.day_offset || 0), 'yyyy-MM-dd'),
-      scheduled_time: t.scheduled_time || '09:00',
-      status: 'PENDING',
-    }))
+    // 5. Insert Tasks
+    const today = format(new Date(), 'yyyy-MM-dd')
+    const frontierIds = new Set(frontier.map(n => n.id))
 
-  if (taskInserts.length === 0) {
-    return NextResponse.json({ error: 'AI did not return valid tasks' }, { status: 500 })
-  }
+    const taskInserts = parsed.tasks
+      .filter(t => frontierIds.has(t.node_id))
+      .map(t => ({
+        user_id: userId,
+        goal_id: goalId,
+        game_plan_node_id: t.node_id,
+        title: t.title.substring(0, 499),
+        completion_definition: t.completion_definition,
+        scheduled_for: today,
+        scheduled_time: t.scheduled_time || '09:00',
+        status: 'PENDING'
+      }))
 
-  const { data: insertedTasks, error: taskError } = await supabase
-    .from('tasks')
-    .insert(taskInserts)
-    .select()
+    if (taskInserts.length === 0) {
+      return NextResponse.json({ error: 'AI returned no tasks linked to valid frontier nodes' }, { status: 500 })
+    }
 
-  if (taskError) {
-    return NextResponse.json({ error: taskError.message }, { status: 500 })
-  }
+    const { data: insertedTasks, error: insertErr } = await supabase
+      .from('tasks')
+      .insert(taskInserts)
+      .select()
 
-  // ============================================
-  // STEP 4: Update goal with workload calculations
-  // ============================================
-  await supabase
-    .from('goals')
-    .update({
-      inefficiency_last_calculated: new Date().toISOString(),
+    if (insertErr || !insertedTasks) {
+      console.error('[TaskGen] Insert failed:', insertErr)
+      return NextResponse.json({ error: 'Failed to save tasks to database' }, { status: 500 })
+    }
+
+    return NextResponse.json({
+      success: true,
+      taskCount: insertedTasks.length,
+      frontierCount: frontier.length
     })
-    .eq('id', goalId)
 
-  return NextResponse.json({
-    success: true,
-    taskCount: insertedTasks.length,
-    dailyBudget: daily_budget_minutes,
-    minutesPerTask: minutes_per_task,
-    inCrunchMode: in_crunch_mode,
-    workloadData: workloadData,
-  })
+  } catch (error) {
+    console.error('[TaskGen] Internal error:', error)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+  }
 }
-

@@ -56,7 +56,7 @@ export default function ChatPage() {
 
   return (
     <div className="p-8 md:pb-20">
-      <h1 className="text-3xl font-bold text-obsidian mb-6">Chat with Morgan</h1>
+      <h1 className="text-3xl font-bold text-gray-900 mb-6">Chat with Morgan</h1>
       <div className="h-96">
         <MorganChat userId={userId} goalId={goalId} />
       </div>

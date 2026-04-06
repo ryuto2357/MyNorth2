@@ -33,7 +33,7 @@ export default function MorganChat({ userId, goalId, initialSessionId }: MorganC
 
     // Add user message to UI
     const userMessage: Message = {
-      id: Date.now().toString(),
+      id: crypto.randomUUID(),
       role: 'user',
       content: input,
       createdAt: new Date().toISOString(),
@@ -68,7 +68,7 @@ export default function MorganChat({ userId, goalId, initialSessionId }: MorganC
 
       // Add assistant message
       const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
+        id: data.messageId || crypto.randomUUID(),
         role: 'assistant',
         content: data.response,
         createdAt: new Date().toISOString(),
@@ -81,7 +81,7 @@ export default function MorganChat({ userId, goalId, initialSessionId }: MorganC
       setMessages((prev) => [
         ...prev,
         {
-          id: (Date.now() + 1).toString(),
+          id: crypto.randomUUID(),
           role: 'assistant',
           content: "Sorry, I encountered an error. Please try again.",
           createdAt: new Date().toISOString(),
@@ -109,7 +109,7 @@ export default function MorganChat({ userId, goalId, initialSessionId }: MorganC
           <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
             <div
               className={`max-w-xs px-4 py-3 rounded-lg ${
-                msg.role === 'user' ? 'bg-celestial-600 text-white' : 'bg-gray-100 text-gray-900'
+                msg.role === 'user' ? 'bg-gray-700 text-white' : 'bg-gray-100 text-gray-900'
               }`}
             >
               <p className="text-sm">{msg.content}</p>

@@ -91,6 +91,7 @@ export default function AddGoalPage() {
         : 0
 
       const newPriority = highestPriority + 1
+      const hasOtherGoals = existingGoals && existingGoals.length > 0
 
       // Create new goal
       const { data: goalData, error: goalError } = await supabase
@@ -103,7 +104,6 @@ export default function AddGoalPage() {
             north_star: formData.title,
             deadline: formData.deadline,
             familiarity_baseline: formData.familiarity,
-            completion_rate_history: 0.6,
             status: 'ACTIVE',
             priority_rank: newPriority,
           },
@@ -138,14 +138,31 @@ export default function AddGoalPage() {
         console.error('Node creation error:', nodeError)
       }
 
-      // Success state
-      setSuccessMessage(`✨ Goal "${formData.title}" created successfully!`)
-      setFormData({ title: '', why: '', deadline: '', familiarity: 5 })
+      // Auto-generate constellation for the new goal
+      try {
+        await fetch('/api/tasks/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ goalId: newGoalId, userId }),
+        })
+      } catch {
+        // Non-blocking — constellation generation can happen later
+      }
 
-      // Redirect after success
-      setTimeout(() => {
-        router.push('/app')
-      }, 2000)
+      // If user has other goals, redirect to chat for multi-goal priority conversation
+      if (hasOtherGoals) {
+        setSuccessMessage(`Goal "${formData.title}" created! Redirecting to Morgan for priority setup...`)
+        setFormData({ title: '', why: '', deadline: '', familiarity: 5 })
+        setTimeout(() => {
+          router.push('/app/chat')
+        }, 1500)
+      } else {
+        setSuccessMessage(`Goal "${formData.title}" created successfully!`)
+        setFormData({ title: '', why: '', deadline: '', familiarity: 5 })
+        setTimeout(() => {
+          router.push('/app')
+        }, 1500)
+      }
     } catch (err: any) {
       setError(err.message || 'An error occurred')
       setLoading(false)
@@ -154,23 +171,23 @@ export default function AddGoalPage() {
 
   if (!userId) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-celestial-50 to-alabaster flex items-center justify-center p-4">
+      <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-50 flex items-center justify-center p-4">
         <div className="text-center">
-          <div className="animate-pulse text-celestial-600 text-lg">Loading...</div>
+          <div className="animate-pulse text-gray-700 text-lg">Loading...</div>
         </div>
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-celestial-50 to-alabaster py-12 px-4">
+    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-50 py-12 px-4">
       <div className="max-w-2xl mx-auto">
-        <Link href="/app" className="inline-flex items-center text-celestial-600 hover:text-celestial-700 mb-8">
+        <Link href="/app" className="inline-flex items-center text-gray-700 hover:text-gray-800 mb-8">
           ← Back to Dashboard
         </Link>
 
         <div className="mb-8">
-          <h1 className="text-4xl font-bold text-obsidian mb-2">
+          <h1 className="text-4xl font-bold text-gray-900 mb-2">
             Add a New Goal
           </h1>
           <p className="text-gray-600">
@@ -182,7 +199,7 @@ export default function AddGoalPage() {
           <form onSubmit={handleSubmit} className="space-y-6">
             {/* Goal Title */}
             <div>
-              <label className="block text-sm font-semibold text-obsidian mb-2">
+              <label className="block text-sm font-semibold text-gray-900 mb-2">
                 What's your goal?
               </label>
               <input
@@ -199,7 +216,7 @@ export default function AddGoalPage() {
 
             {/* Why it matters */}
             <div>
-              <label className="block text-sm font-semibold text-obsidian mb-2">
+              <label className="block text-sm font-semibold text-gray-900 mb-2">
                 Why does this goal matter to you?
               </label>
               <textarea
@@ -213,7 +230,7 @@ export default function AddGoalPage() {
 
             {/* Deadline */}
             <div>
-              <label className="block text-sm font-semibold text-obsidian mb-2">
+              <label className="block text-sm font-semibold text-gray-900 mb-2">
                 When do you want to achieve this?
               </label>
               <input
@@ -228,7 +245,7 @@ export default function AddGoalPage() {
 
             {/* Familiarity */}
             <div>
-              <label className="block text-sm font-semibold text-obsidian mb-2">
+              <label className="block text-sm font-semibold text-gray-900 mb-2">
                 How familiar are you with this already?
               </label>
               <div className="space-y-3">
@@ -243,7 +260,7 @@ export default function AddGoalPage() {
                 />
                 <div className="flex justify-between text-sm text-gray-600">
                   <span>0 (Beginner)</span>
-                  <span className="font-bold text-celestial-600">{formData.familiarity}/10</span>
+                  <span className="font-bold text-gray-700">{formData.familiarity}/10</span>
                   <span>10 (Expert)</span>
                 </div>
               </div>
@@ -282,11 +299,11 @@ export default function AddGoalPage() {
         {/* Tips Section */}
         <div className="mt-12 grid grid-cols-1 md:grid-cols-2 gap-6">
           <div className="bg-white rounded-lg p-6 border border-gray-200">
-            <h3 className="font-semibold text-obsidian mb-2">💡 Make it SMART</h3>
+            <h3 className="font-semibold text-gray-900 mb-2">💡 Make it SMART</h3>
             <p className="text-sm text-gray-600">Specific, Measurable, Achievable, Relevant, Time-bound. Clear goals are easier to break down into daily actions.</p>
           </div>
           <div className="bg-white rounded-lg p-6 border border-gray-200">
-            <h3 className="font-semibold text-obsidian mb-2">📍 Focus Over Quantity</h3>
+            <h3 className="font-semibold text-gray-900 mb-2">📍 Focus Over Quantity</h3>
             <p className="text-sm text-gray-600">Quality over quantity. It's better to have 3 meaningful goals you're committed to than 10 you abandon.</p>
           </div>
         </div>

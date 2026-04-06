@@ -17,7 +17,8 @@ function getNodeColor(node: any) {
 export default function ConstellationPage() {
   const [nodes, setNodes] = useState<any[]>([])
   const [links, setLinks] = useState<any[]>([])
-  const [goal, setGoal] = useState<any>(null)
+  const [goals, setGoals] = useState<any[]>([])
+  const [selectedGoalId, setSelectedGoalId] = useState<string | null>(null)
   const [userId, setUserId] = useState<string | null>(null)
   const [selectedNode, setSelectedNode] = useState<any>(null)
   const [loading, setLoading] = useState(true)
@@ -52,25 +53,36 @@ export default function ConstellationPage() {
       const uid = session.user.id
       setUserId(uid)
 
-      const { data: goals } = await supabase
+      const { data: goalsData } = await supabase
         .from('goals')
         .select('*')
         .eq('user_id', uid)
         .eq('status', 'ACTIVE')
-        .limit(1)
+        .order('priority_rank')
 
-      if (!goals || goals.length === 0) {
+      if (!goalsData || goalsData.length === 0) {
         setLoading(false)
         return
       }
 
-      setGoal(goals[0])
-      await fetchGraph(goals[0].id)
+      setGoals(goalsData)
+      setSelectedGoalId(goalsData[0].id)
+      await fetchGraph(goalsData[0].id)
       setLoading(false)
     }
 
     loadData()
   }, [fetchGraph])
+
+  const goal = goals.find(g => g.id === selectedGoalId) || goals[0]
+
+  async function switchGoal(goalId: string) {
+    setSelectedGoalId(goalId)
+    setSelectedNode(null)
+    setNodes([])
+    setLinks([])
+    await fetchGraph(goalId)
+  }
 
   async function generateConstellation() {
     if (!goal || !userId) return
@@ -95,20 +107,20 @@ export default function ConstellationPage() {
   if (loading) {
     return (
       <div className="p-8 flex items-center justify-center min-h-[60vh]">
-        <div className="text-celestial-600 animate-pulse text-lg">
+        <div className="text-gray-700 animate-pulse text-lg">
           Loading your constellation...
         </div>
       </div>
     )
   }
 
-  if (!goal) {
+  if (goals.length === 0) {
     return (
       <div className="p-8">
-        <h1 className="text-3xl font-bold text-obsidian mb-6">Your Constellation</h1>
+        <h1 className="text-3xl font-bold text-gray-900 mb-6">Your Constellation</h1>
         <div className="card text-center py-12">
           <div className="text-4xl mb-4">🎯</div>
-          <h2 className="text-xl font-bold text-obsidian mb-2">No active goal found</h2>
+          <h2 className="text-xl font-bold text-gray-900 mb-2">No active goal found</h2>
           <p className="text-gray-600">Complete onboarding to set up your first goal.</p>
         </div>
       </div>
@@ -120,8 +132,26 @@ export default function ConstellationPage() {
       {/* Header */}
       <div className="flex items-center justify-between flex-shrink-0">
         <div>
-          <h1 className="text-2xl font-bold text-obsidian">Your Constellation</h1>
-          <p className="text-gray-500 text-sm mt-0.5">{goal.title}</p>
+          <h1 className="text-2xl font-bold text-gray-900">Your Constellation</h1>
+          {goals.length > 1 ? (
+            <div className="flex gap-2 mt-1.5">
+              {goals.map((g) => (
+                <button
+                  key={g.id}
+                  onClick={() => switchGoal(g.id)}
+                  className={`text-xs px-3 py-1 rounded-full font-medium transition-all ${
+                    selectedGoalId === g.id
+                      ? 'bg-gray-700 text-white'
+                      : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                  }`}
+                >
+                  {g.title.length > 25 ? g.title.substring(0, 25) + '...' : g.title}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="text-gray-500 text-sm mt-0.5">{goal?.title}</p>
+          )}
         </div>
         <div className="flex items-center gap-4">
           {nodes.length > 0 && (
@@ -173,13 +203,13 @@ export default function ConstellationPage() {
         <div className="card flex-1 flex items-center justify-center">
           <div className="text-center">
             <div className="text-7xl mb-4">✨</div>
-            <h2 className="text-2xl font-bold text-obsidian mb-2">Your constellation awaits</h2>
+            <h2 className="text-2xl font-bold text-gray-900 mb-2">Your constellation awaits</h2>
             <p className="text-gray-600 mb-6 max-w-md">
               Morgan will map your goal into a constellation — achievements, skills, and the path
               to mastery.
             </p>
             {generating ? (
-              <div className="text-celestial-600 animate-pulse">
+              <div className="text-gray-700 animate-pulse">
                 Morgan is mapping your constellation...
               </div>
             ) : (
@@ -203,7 +233,7 @@ export default function ConstellationPage() {
                   style={{ backgroundColor: getNodeColor(selectedNode) }}
                 />
                 <div>
-                  <h3 className="font-bold text-obsidian text-sm leading-snug">
+                  <h3 className="font-bold text-gray-900 text-sm leading-snug">
                     {selectedNode.label}
                   </h3>
                   <span className="text-xs text-gray-400">
@@ -259,7 +289,7 @@ export default function ConstellationPage() {
                     style={{ backgroundColor: getNodeColor(selectedNode) }}
                   />
                   <div>
-                    <h3 className="font-bold text-obsidian text-lg">
+                    <h3 className="font-bold text-gray-900 text-lg">
                       {selectedNode.label}
                     </h3>
                     <span className="text-sm text-gray-400">

@@ -1,71 +1,100 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
-import { updateGoalCompletionRate } from '@/lib/completion-rate'
-import { invalidateUserCorpus } from '@/lib/user-corpus'
+import { createServerClient } from '@/lib/supabase-server'
+import { getAuthUser } from '@/lib/auth-api'
 
-export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
-  const { status } = await req.json()
-  const { id } = params
+/** Return today's date as YYYY-MM-DD in local time. */
+function todayDate(): string {
+  return new Date().toISOString().split('T')[0]
+}
 
-  const allowed = ['PENDING', 'COMPLETED', 'SKIPPED']
-  if (!allowed.includes(status)) {
-    return NextResponse.json({ error: 'Invalid status' }, { status: 400 })
-  }
+// ---------------------------------------------------------------------------
+// PATCH /api/tasks/[id]
+// ---------------------------------------------------------------------------
 
-  const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  )
-
-  // Fetch the current task to check previous state
-  const { data: currentTask, error: fetchError } = await supabase
-    .from('tasks')
-    .select('*')
-    .eq('id', id)
-    .single()
-
-  if (fetchError || !currentTask) {
-    return NextResponse.json({ error: 'Task not found' }, { status: 404 })
-  }
-
-  // Build update object
-  const updateObj: any = {
-    status,
-    updated_at: new Date().toISOString(),
-  }
-
-  // If marking complete, set completed_at timestamp (only if not already set)
-  if (status === 'COMPLETED' && !currentTask.completed_at) {
-    updateObj.completed_at = new Date().toISOString()
-  }
-
-  // If un-completing, clear completed_at
-  if (status !== 'COMPLETED' && currentTask.completed_at) {
-    updateObj.completed_at = null
-  }
-
-  const { data, error } = await supabase
-    .from('tasks')
-    .update(updateObj)
-    .eq('id', id)
-    .select()
-    .single()
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
-  }
-
-  // Recalculate completion rate for the goal
-  if (currentTask.goal_id && currentTask.user_id) {
-    try {
-      await updateGoalCompletionRate(supabase, currentTask.goal_id, currentTask.user_id)
-      // Invalidate user_corpus cache so next Morgan call has fresh data
-      await invalidateUserCorpus(supabase, currentTask.user_id)
-    } catch (rateError) {
-      console.error('Error updating completion rate:', rateError)
-      // Don't fail the request if completion rate update fails
+export async function PATCH(
+  req: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const authUser = await getAuthUser(req)
+    if (!authUser) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
-  }
 
-  return NextResponse.json({ task: data })
+    const { status } = await req.json()
+    const { id } = params
+
+    const allowed = ['PENDING', 'COMPLETED', 'ATTEMPTED', 'SKIPPED'] as const
+    if (!allowed.includes(status)) {
+      return NextResponse.json({ error: 'Invalid status' }, { status: 400 })
+    }
+
+    const supabase = createServerClient()
+    const now = new Date().toISOString()
+
+    // --------------------------------------------------
+    // 1. Update the task — verify ownership
+    // --------------------------------------------------
+    const taskUpdate: Record<string, unknown> = { status, updated_at: now }
+    if (['COMPLETED', 'ATTEMPTED', 'SKIPPED'].includes(status)) {
+      taskUpdate.completed_at = now
+    } else {
+      taskUpdate.completed_at = null
+    }
+
+    const { data: task, error: taskError } = await supabase
+      .from('tasks')
+      .update(taskUpdate)
+      .eq('id', id)
+      .eq('user_id', authUser.id)
+      .select()
+      .single()
+
+    if (taskError || !task) {
+      if (taskError) console.error('Task update failed:', taskError.message)
+      return NextResponse.json({ error: 'Task not found' }, { status: 404 })
+    }
+
+    // Non-terminal status — nothing else to do
+    if (status === 'PENDING') {
+      return NextResponse.json({ task })
+    }
+
+    // --------------------------------------------------
+    // 2. If task is linked to a game_plan_node, update gate_pace
+    // --------------------------------------------------
+    if (status === 'COMPLETED' && task.game_plan_node_id) {
+      const { data: user } = await supabase
+        .from('users')
+        .select('gates_cleared_log')
+        .eq('id', authUser.id)
+        .single()
+
+      if (user) {
+        const log = Array.isArray(user.gates_cleared_log) ? user.gates_cleared_log : []
+        const newLog = [...log, { date: todayDate(), node_id: task.game_plan_node_id }]
+
+        const fourteenDaysAgo = new Date()
+        fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 14)
+        const recentClears = newLog.filter(
+          (e: { date: string }) => new Date(e.date) >= fourteenDaysAgo
+        )
+        const newGatePace = recentClears.length / 14
+
+        await supabase
+          .from('users')
+          .update({
+            gates_cleared_log: newLog,
+            gate_pace: newGatePace,
+            updated_at: now,
+          })
+          .eq('id', authUser.id)
+      }
+    }
+
+    return NextResponse.json({ task })
+  } catch (error) {
+    console.error('Task PATCH error:', error)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+  }
 }
