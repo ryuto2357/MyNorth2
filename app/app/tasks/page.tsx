@@ -1,243 +1,176 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabase'
+import type { Goal, Task } from '@/types'
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-interface FrontierNode {
-  id: string
-  title: string
-  completion_definition: string
-  gate_type: 'ACHIEVEMENT' | 'MILESTONE' | 'SKILL' | 'TASK'
-  status: string
-  goal_title: string
-  unlocks: string[]
+function statusBadgeClass(status: Task['status']) {
+  if (status === 'COMPLETED') return 'bg-green-100 text-green-700'
+  if (status === 'ATTEMPTED') return 'bg-yellow-100 text-yellow-700'
+  if (status === 'SKIPPED') return 'bg-gray-200 text-gray-600'
+  return 'bg-blue-100 text-blue-700'
 }
 
-interface FrontierResponse {
-  frontier: FrontierNode[]
-  next_up: FrontierNode[]
-  locked_count: number
-}
-
-// ---------------------------------------------------------------------------
-// Components
-// ---------------------------------------------------------------------------
-
-function FrontierTaskCard({
-  node,
-  onVerify,
-}: {
-  node: FrontierNode
-  onVerify: (id: string, method: 'SELF_REPORT' | 'QUIZ' | 'DEMONSTRATION') => void
-}) {
-  const [isVerifying, setIsVerifying] = useState(false)
-
-  const handleVerify = async (method: 'SELF_REPORT' | 'QUIZ' | 'DEMONSTRATION') => {
-    setIsVerifying(true)
-    await onVerify(node.id, method)
-    setIsVerifying(false)
-  }
-
-  return (
-    <div className="card border-l-4 border-l-blue-500 flex flex-col gap-4 p-5 transition-all hover:shadow-md">
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex-1">
-          <div className="flex items-center gap-2 mb-1">
-             <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-blue-50 text-blue-600">
-              {node.gate_type}
-            </span>
-            <span className="text-[10px] font-medium text-gray-400">
-              {node.goal_title}
-            </span>
-          </div>
-          <h3 className="font-bold text-gray-900 text-lg leading-tight">
-            {node.title}
-          </h3>
-          <p className="text-sm text-gray-600 mt-2 leading-relaxed italic">
-            &ldquo;{node.completion_definition}&rdquo;
-          </p>
-        </div>
-      </div>
-
-      {node.unlocks.length > 0 && (
-        <div className="flex items-center gap-1.5 text-[11px] text-gray-400">
-          <span className="font-semibold text-gray-500 uppercase tracking-tighter">Unlocks:</span>
-          <span>{node.unlocks.join(', ')}</span>
-        </div>
-      )}
-
-      <div className="flex items-center gap-3 mt-2">
-        <button
-          onClick={() => handleVerify('SELF_REPORT')}
-          disabled={isVerifying}
-          className="flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-2.5 px-4 rounded-xl text-sm transition-colors shadow-sm disabled:opacity-50"
-        >
-          {isVerifying ? 'Verifying...' : 'Complete'}
-        </button>
-        <button
-          onClick={() => handleVerify('SELF_REPORT')} // Simplified for MVP
-          disabled={isVerifying}
-          className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-2.5 px-4 rounded-xl text-sm transition-colors disabled:opacity-50"
-        >
-          I Tried
-        </button>
-      </div>
-    </div>
-  )
-}
-
-function NextUpItem({ node }: { node: FrontierNode }) {
-  return (
-    <div className="flex items-start gap-3 opacity-60">
-      <div className="mt-1 w-2 h-2 rounded-full border-2 border-gray-400" />
-      <div>
-        <p className="text-sm font-medium text-gray-700">{node.title}</p>
-        <p className="text-[10px] text-gray-400 uppercase tracking-widest">{node.gate_type}</p>
-      </div>
-    </div>
-  )
-}
-
-function HonestyBanner() {
-  return (
-    <div className="card bg-amber-50 border-amber-200 p-4 mb-8 flex items-center justify-between gap-4">
-      <div>
-        <p className="text-sm font-bold text-amber-900">You&apos;re a bit behind pace.</p>
-        <p className="text-xs text-amber-700">Want to talk to Morgan about adjusting the plan?</p>
-      </div>
-      <button className="text-xs font-bold text-amber-900 underline">Chat with Morgan</button>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Main Page
-// ---------------------------------------------------------------------------
-
-export default function FrontierPage() {
-  const [data, setData] = useState<FrontierResponse | null>(null)
-  const [paceGap, setPaceGap] = useState<number>(1.0)
+export default function TasksPage() {
+  const [tasks, setTasks] = useState<Task[]>([])
+  const [goals, setGoals] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [feedback, setFeedback] = useState<{ cleared: boolean; text: string } | null>(null)
 
-  const loadFrontier = useCallback(async () => {
+  const loadTasks = useCallback(async () => {
+    setError('')
     try {
-      const [frontierRes, userRes] = await Promise.all([
-        fetch('/api/game-plan/frontier'),
-        supabase.from('users').select('pace_gap').single()
+      const {
+        data: { session },
+      } = await supabase.auth.getSession()
+      if (!session) {
+        setTasks([])
+        return
+      }
+
+      const userId = session.user.id
+      const [tasksRes, goalsRes] = await Promise.all([
+        supabase
+          .from('tasks')
+          .select('*')
+          .eq('user_id', userId)
+          .order('scheduled_for', { ascending: false })
+          .order('scheduled_time', { ascending: true }),
+        supabase.from('goals').select('id, title').eq('user_id', userId),
       ])
 
-      if (!frontierRes.ok) throw new Error('Failed to load frontier')
-      
-      const frontierData = await frontierRes.json()
-      setData(frontierData)
-      setPaceGap(userRes.data?.pace_gap || 1.0)
-    } catch (err) {
-      setError('Could not load your daily tasks.')
+      if (tasksRes.error) throw tasksRes.error
+      if (goalsRes.error) throw goalsRes.error
+
+      setTasks(tasksRes.data || [])
+      setGoals(
+        Object.fromEntries((goalsRes.data || []).map((g: Pick<Goal, 'id' | 'title'>) => [g.id, g.title])),
+      )
+    } catch {
+      setError('Could not load tasks.')
     } finally {
       setLoading(false)
     }
   }, [])
 
   useEffect(() => {
-    loadFrontier()
-  }, [loadFrontier])
+    loadTasks()
+  }, [loadTasks])
 
-  const handleVerify = async (id: string, method: string) => {
-    setFeedback(null)
-    try {
-      const res = await fetch(`/api/game-plan/nodes/${id}/verify`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ student_response: 'completed', verification_method: method })
-      })
+  const updateTaskStatus = useCallback(
+    async (taskId: string, nextStatus: Task['status']) => {
+      setError('')
+      const prev = tasks
+      setTasks((current) => current.map((t) => (t.id === taskId ? { ...t, status: nextStatus } : t)))
 
-      const result = await res.json()
-      if (result.cleared) {
-        setFeedback({ cleared: true, text: result.feedback })
-        // Reload frontier to show newly unlocked nodes
-        await loadFrontier()
-      } else {
-        setFeedback({ cleared: false, text: result.feedback })
+      try {
+        const res = await fetch(`/api/tasks/${taskId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: nextStatus }),
+        })
+        if (!res.ok) throw new Error('Failed')
+      } catch {
+        setTasks(prev)
+        setError('Task update failed. Please try again.')
       }
-    } catch (err) {
-      setError('Verification failed. Please try again.')
+    },
+    [tasks],
+  )
+
+  const grouped = useMemo(() => {
+    const byDay: Record<string, Task[]> = {}
+    for (const task of tasks) {
+      const day = task.scheduled_for || 'Unscheduled'
+      if (!byDay[day]) byDay[day] = []
+      byDay[day].push(task)
     }
-  }
+    return byDay
+  }, [tasks])
 
   if (loading) {
     return (
-      <div className="p-8 flex flex-col gap-4 animate-pulse max-w-2xl mx-auto">
-        <div className="h-8 bg-gray-200 rounded w-1/3 mb-4" />
-        <div className="h-40 bg-gray-200 rounded" />
-        <div className="h-40 bg-gray-200 rounded" />
+      <div className="p-8 flex flex-col gap-4 animate-pulse max-w-4xl mx-auto">
+        <div className="h-8 bg-gray-200 rounded w-1/3" />
+        <div className="h-24 bg-gray-200 rounded" />
+        <div className="h-24 bg-gray-200 rounded" />
       </div>
     )
   }
 
-  const isEmpty = !data || (data.frontier.length === 0 && data.next_up.length === 0)
-
   return (
-    <div className="p-8 pb-24 max-w-2xl mx-auto">
-      {/* Header */}
-      <div className="mb-10">
-        <h1 className="text-3xl font-black text-gray-900 tracking-tight">Today</h1>
-        <p className="text-gray-500 font-medium">Clear the frontier to move forward.</p>
+    <div className="p-8 pb-24 max-w-4xl mx-auto">
+      <div className="mb-8">
+        <h1 className="text-3xl font-black text-gray-900 tracking-tight">All Tasks</h1>
+        <p className="text-gray-500 font-medium">View and manage your full task list.</p>
       </div>
 
-      {/* Honesty Engine Banner */}
-      {paceGap > 1.5 && <HonestyBanner />}
-
-      {/* Feedback Banner */}
-      {feedback && (
-        <div className={`card mb-8 p-5 ${feedback.cleared ? 'bg-green-50 border-green-200' : 'bg-amber-50 border-amber-200'}`}>
-          <p className={`text-sm font-bold ${feedback.cleared ? 'text-green-900' : 'text-amber-900'}`}>
-            {feedback.cleared ? 'Gate Cleared!' : 'Not quite yet.'}
-          </p>
-          <p className="text-sm text-gray-700 mt-1 leading-relaxed">{feedback.text}</p>
+      {tasks.length === 0 ? (
+        <div className="card text-center py-12">
+          <p className="text-4xl mb-4">✅</p>
+          <h2 className="text-lg font-bold text-gray-900">No tasks yet</h2>
+          <p className="text-sm text-gray-500 mt-2">Generate tasks from your goals to get started.</p>
         </div>
-      )}
+      ) : (
+        <div className="flex flex-col gap-8">
+          {Object.entries(grouped).map(([day, dayTasks]) => (
+            <section key={day}>
+              <h2 className="text-[11px] font-black text-gray-400 uppercase tracking-[0.2em] mb-4">{day}</h2>
+              <div className="card p-0 overflow-hidden">
+                <ul className="divide-y divide-gray-100">
+                  {dayTasks.map((task) => {
+                    const isResolved = task.status !== 'PENDING'
+                    return (
+                      <li key={task.id} className={`p-4 flex items-start justify-between gap-4 ${isResolved ? 'opacity-75' : ''}`}>
+                        <div className="min-w-0 flex-1">
+                          <p className={`font-semibold truncate ${task.status === 'COMPLETED' ? 'line-through text-gray-500' : 'text-gray-900'}`}>
+                            {task.title}
+                          </p>
+                          {task.completion_definition && (
+                            <p className="text-xs text-gray-500 italic mt-1 truncate">
+                              Done when: {task.completion_definition}
+                            </p>
+                          )}
+                          <div className="mt-1 text-xs text-gray-400 flex items-center gap-2">
+                            {task.scheduled_time && <span>{task.scheduled_time}</span>}
+                            {task.goal_id && goals[task.goal_id] && <span>• {goals[task.goal_id]}</span>}
+                          </div>
+                        </div>
 
-      {/* Frontier (Active Tasks) */}
-      <section className="mb-12">
-        <h2 className="text-[11px] font-black text-gray-400 uppercase tracking-[0.2em] mb-5">You Are Here</h2>
-        
-        {isEmpty ? (
-          <div className="card text-center py-12">
-            <p className="text-4xl mb-4">✨</p>
-            <h3 className="text-lg font-bold text-gray-900">All caught up!</h3>
-            <p className="text-sm text-gray-500 mt-2 max-w-xs mx-auto">
-              Generate a Game Plan for a new goal to see more tasks.
-            </p>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-6">
-            {data?.frontier.map(node => (
-              <FrontierTaskCard 
-                key={node.id} 
-                node={node} 
-                onVerify={handleVerify}
-              />
-            ))}
-          </div>
-        )}
-      </section>
-
-      {/* Next Up (Locked) */}
-      {data && data.next_up.length > 0 && (
-        <section>
-          <h2 className="text-[11px] font-black text-gray-400 uppercase tracking-[0.2em] mb-5">Next Up</h2>
-          <div className="flex flex-col gap-4">
-            {data.next_up.map(node => (
-              <NextUpItem key={node.id} node={node} />
-            ))}
-          </div>
-        </section>
+                        {isResolved ? (
+                          <span className={`text-xs font-semibold px-3 py-1 rounded-full ${statusBadgeClass(task.status)}`}>
+                            {task.status}
+                          </span>
+                        ) : (
+                          <div className="flex gap-2 shrink-0">
+                            <button
+                              onClick={() => updateTaskStatus(task.id, 'COMPLETED')}
+                              className="btn-primary text-sm px-3 py-1"
+                            >
+                              Complete
+                            </button>
+                            <button
+                              onClick={() => updateTaskStatus(task.id, 'ATTEMPTED')}
+                              className="btn-secondary text-sm px-3 py-1"
+                            >
+                              I Tried
+                            </button>
+                            <button
+                              onClick={() => updateTaskStatus(task.id, 'SKIPPED')}
+                              className="text-sm px-3 py-1 text-gray-500 hover:text-gray-700 transition-colors"
+                            >
+                              Skip
+                            </button>
+                          </div>
+                        )}
+                      </li>
+                    )
+                  })}
+                </ul>
+              </div>
+            </section>
+          ))}
+        </div>
       )}
 
       {error && (
